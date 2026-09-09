@@ -86,62 +86,103 @@ const SYSTEM_PROMPT = `You are the official AI Assistant for "Sidography Photogr
 const userSessions = new Map();
 
 /**
- * Detect if customer asked for a PDF / quotation document
+ * Detect customer's inquiry package and whether they want service details / PDF / brochure / rates
  */
-function detectPdfRequest(text) {
+function detectServiceOrPdfRequest(text, sessionHistory = []) {
   const lower = text.toLowerCase();
-  const pdfKeywords = [
-    'pdf', 'पीडीएफ', 'quotation', 'कोटेशन', 'brochure', 'ब्रोशर', 
-    'estimate', 'अंदाजे', 'रेट कार्ड', 'rate card', 'catalogue', 'catalog', 'कॅटलॉग', 'दर पत्रक', 'माहिती पत्रक'
-  ];
 
-  const wantsPdf = pdfKeywords.some(kw => lower.includes(kw));
-  if (!wantsPdf) return null;
+  // 1. Detect service package type
+  let detectedPackage = null;
+  const isPrewedding = /pre[- ]?wedding|प्री[- ]?वेडिंग|prewed|कपल्स शूट/i.test(text);
+  const isPortrait = /portrait|model|पोर्ट्रेट|मॉडेल|portfolio|पोर्टफोलिओ|हेडशॉट|headshot/i.test(text);
+  const isEvent = /event|इव्हेंट|इवेंट|birthday|वाढदिवस|corporate|कॉर्पोरेट|anniversary|party|समारंभ/i.test(text);
+  const isWedding = /wedding|लग्न|विवाह|शादी|marriage|engagement|साखरपुडा|हळद|haldi|reception|रिसेप्शन/i.test(text);
 
-  if (lower.includes('pre-wedding') || lower.includes('prewedding') || lower.includes('प्री-वेडिंग') || lower.includes('प्रीवेडिंग')) {
-    return 'prewedding';
+  if (isPrewedding) detectedPackage = 'prewedding';
+  else if (isPortrait) detectedPackage = 'portrait';
+  else if (isEvent) detectedPackage = 'event';
+  else if (isWedding) detectedPackage = 'wedding';
+
+  // If no package detected in current message, look back at recent conversation history!
+  if (!detectedPackage && sessionHistory.length > 0) {
+    for (let i = sessionHistory.length - 1; i >= 0; i--) {
+      const pastText = sessionHistory[i].content || '';
+      if (/pre[- ]?wedding|प्री[- ]?वेडिंग/i.test(pastText)) { detectedPackage = 'prewedding'; break; }
+      if (/portrait|model|पोर्ट्रेट|मॉडेल/i.test(pastText)) { detectedPackage = 'portrait'; break; }
+      if (/event|इव्हेंट|birthday|corporate/i.test(pastText)) { detectedPackage = 'event'; break; }
+      if (/wedding|लग्न|विवाह|शादी/i.test(pastText)) { detectedPackage = 'wedding'; break; }
+    }
   }
-  if (lower.includes('portrait') || lower.includes('model') || lower.includes('पोर्ट्रेट') || lower.includes('मॉडेल')) {
-    return 'portrait';
-  }
-  if (lower.includes('event') || lower.includes('इव्हेंट') || lower.includes('इवेंट') || lower.includes('birthday') || lower.includes('corporate')) {
-    return 'event';
-  }
-  if (lower.includes('wedding') || lower.includes('लग्न') || lower.includes('विवाह') || lower.includes('शादी') || lower.includes('marriage')) {
-    return 'wedding';
-  }
-  return 'all';
+
+  // 2. Detect if customer wants PDF, quotation, price, rates, charges, details, packages, services
+  const hasDocOrServiceIntent = 
+    /pdf|पीडीएफ|quotation|कोटेशन|brochure|ब्रोशर|estimate|अंदाजे|रेट|rate|rates|card|कार्ड|catalogue|catalog|कॅटलॉग|दर|माहिती|details|डिटेल्स|charges|fees|खर्च|किंमत|price|pricing|पॅकेज|package|packages|list|सर्व्हिसेस|services|service|ऑफर|offer|photoshoot|फोटोग्राफी|shoot|द्या|sang|sanga|pathva/i.test(text);
+
+  if (!hasDocOrServiceIntent) return null;
+  return detectedPackage || 'all';
 }
 
 /**
- * Detect if customer says payment has been done / asks for payment receipt
+ * Detect if customer performed Payment, sent transaction details, or asked for payment receipt
  */
-function detectPaymentRequest(text) {
+function detectPaymentOrReceiptRequest(text, hasMedia = false, sessionHistory = []) {
   const lower = text.toLowerCase();
-  const payKeywords = [
-    'payment done', 'payment kela', 'payment zale', 'payment jhale',
-    'पेमेंट झाले', 'पेमेंट केले', 'पैसे पाठवले', 'पैसे दिले',
-    'gpay kela', 'phonepe kela', 'advance paid', 'token paid',
-    'अॅडव्हान्स दिले', 'अग्रिम', 'पावती द्या', 'receipt dya', 'bill dya', 'पावती पाठवा'
-  ];
 
-  const isExplicitPay = payKeywords.some(kw => lower.includes(kw));
-  const isGenericPay = (lower.includes('payment') || lower.includes('पेमेंट')) &&
-    (lower.includes('done') || lower.includes('jhale') || lower.includes('zale') || lower.includes('kela') || lower.includes('sent') || lower.includes('केले') || lower.includes('झाले'));
+  // 1. Any image/screenshot sent to business chat is treated as payment confirmation
+  if (hasMedia) {
+    let pkg = 'wedding';
+    if (sessionHistory.length > 0) {
+      for (let i = sessionHistory.length - 1; i >= 0; i--) {
+        const past = sessionHistory[i].content || '';
+        if (/pre[- ]?wedding|प्री[- ]?वेडिंग/i.test(past)) { pkg = 'prewedding'; break; }
+        if (/portrait|model|पोर्ट्रेट|मॉडेल/i.test(past)) { pkg = 'portrait'; break; }
+        if (/event|इव्हेंट|birthday|corporate/i.test(past)) { pkg = 'event'; break; }
+        if (/wedding|लग्न|विवाह|शादी/i.test(past)) { pkg = 'wedding'; break; }
+      }
+    }
+    return pkg;
+  }
 
-  if (!isExplicitPay && !isGenericPay) return null;
+  // 2. Direct transaction or reference proof
+  const hasTxnProof = /utr|txn|transaction|upi ref|ref no|reference no|screenshot|screen shot|स्क्रीनशॉट/i.test(lower);
 
-  if (lower.includes('pre-wedding') || lower.includes('prewedding') || lower.includes('प्री-वेडिंग') || lower.includes('प्रीवेडिंग')) {
-    return 'prewedding';
+  // 3. Payment indicators across English, Hinglish, Marathi, Hindi
+  const payWord = /payment|पेमेंट|paise|पैसे|advance|अॅडव्हान्स|token|टोकन|अग्रिम|paid|gpay|google pay|phonepe|phone pe|paytm|upi/i.test(lower);
+  const actionWord = /done|kela|keli|kelay|kele|kel|zale|jhale|zal|jhal|झाले|केले|केलं|दिले|दिला|दिली|dila|dili|dile|pathavle|pathavla|pathavli|पाठवले|पाठवला|पाठवली|takle|टाकले|transfer|sent|bhetle|bhetla|ho gaya|bhej diya|check|confirm|booking/i.test(lower);
+
+  const receiptWord = /receipt|पावती|pavti|bill|बिल|invoice|इनव्हॉइस/i.test(lower);
+
+  // Numeric amount mentioned with payment/transfer
+  const isNumericPay = 
+    /(paid|sent|transfer|दिले|पाठवले|टाकले)[\s:]*([₹rs.]*\s*\d+)/i.test(lower) || 
+    /([₹rs.]*\s*\d+)[\s:]*(paid|sent|transfer|advance|token|दिले|पाठवले|टाकले)/i.test(lower);
+
+  const isExplicitQuickPay = /^(paid|done|payment done|paid advance|token paid)$/i.test(lower.trim());
+
+  if (!hasTxnProof && !receiptWord && !isNumericPay && !(payWord && actionWord) && !isExplicitQuickPay) {
+    return null;
   }
-  if (lower.includes('portrait') || lower.includes('model') || lower.includes('पोर्ट्रेट') || lower.includes('मॉडेल')) {
-    return 'portrait';
+
+  // Determine specific service package
+  if (/pre[- ]?wedding|प्री[- ]?वेडिंग/i.test(text)) return 'prewedding';
+  if (/portrait|model|पोर्ट्रेट|मॉडेल/i.test(text)) return 'portrait';
+  if (/event|इव्हेंट|birthday|corporate/i.test(text)) return 'event';
+  if (/wedding|लग्न|विवाह|शादी/i.test(text)) return 'wedding';
+
+  // Check history
+  if (sessionHistory.length > 0) {
+    for (let i = sessionHistory.length - 1; i >= 0; i--) {
+      const past = sessionHistory[i].content || '';
+      if (/pre[- ]?wedding|प्री[- ]?वेडिंग/i.test(past)) return 'prewedding';
+      if (/portrait|model|पोर्ट्रेट|मॉडेल/i.test(past)) return 'portrait';
+      if (/event|इव्हेंट|birthday|corporate/i.test(past)) return 'event';
+      if (/wedding|लग्न|विवाह|शादी/i.test(past)) return 'wedding';
+    }
   }
-  if (lower.includes('event') || lower.includes('इव्हेंट') || lower.includes('इवेंट')) {
-    return 'event';
-  }
+
   return 'wedding';
 }
+
 
 // Helper to query OpenRouter AI
 async function getAIReply(jid, userText) {
@@ -252,12 +293,22 @@ async function startWhatsAppBot() {
         continue;
       }
 
-      // Extract text message content
-      const userText = 
+      // Detect if user sent media (image/screenshot or document)
+      const isImage = !!msg.message?.imageMessage;
+      const isDocument = !!msg.message?.documentMessage;
+
+      // Extract text message content or media caption
+      let userText = 
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
+        msg.message?.documentMessage?.caption ||
         "";
+
+      // If user sent a photo/screenshot with no caption, assume payment receipt proof
+      if ((isImage || isDocument) && !userText.trim()) {
+        userText = "पेमेंट स्क्रीनशॉट / ट्रान्झॅक्शन पावती पाठवली आहे";
+      }
 
       if (!userText.trim()) continue;
 
@@ -271,9 +322,12 @@ async function startWhatsAppBot() {
         // non-fatal
       }
 
-      // 1. Check if customer performed Payment or requested PDF
-      const paymentPkgKey = detectPaymentRequest(userText.trim());
-      const pdfPackageKey = !paymentPkgKey ? detectPdfRequest(userText.trim()) : null;
+      // Fetch user session history for context
+      const sessionHistory = userSessions.get(remoteJid) || [];
+
+      // 1. Check if customer performed Payment or requested Services / Quotation PDF
+      const paymentPkgKey = detectPaymentOrReceiptRequest(userText.trim(), isImage || isDocument, sessionHistory);
+      const pdfPackageKey = !paymentPkgKey ? detectServiceOrPdfRequest(userText.trim(), sessionHistory) : null;
 
       // 2. Start parallel execution: AI text response + PDF generation concurrently!
       const aiPromise = getAIReply(remoteJid, userText.trim());
@@ -282,13 +336,13 @@ async function startWhatsAppBot() {
 
       if (paymentPkgKey) {
         isReceipt = true;
-        console.log(`🧾 Customer confirmed payment! Generating Payment Receipt PDF for "${paymentPkgKey}"...`);
+        console.log(`🧾 Payment detected! Generating Payment Receipt PDF for "${paymentPkgKey}"...`);
         pdfPromise = generatePaymentReceiptPDF({
           packageKey: paymentPkgKey,
           clientPhone: `+${senderNumber}`
         });
       } else if (pdfPackageKey) {
-        console.log(`📄 Customer requested PDF! Generating Quotation PDF for "${pdfPackageKey}"...`);
+        console.log(`📄 Service / PDF requested! Generating Quotation PDF for "${pdfPackageKey}"...`);
         pdfPromise = generateQuotationPDF({
           packageKey: pdfPackageKey,
           clientPhone: `+${senderNumber}`
@@ -298,13 +352,17 @@ async function startWhatsAppBot() {
       // Wait for both AI text and PDF buffer in parallel for instant response
       const [aiReply, pdfBuffer] = await Promise.all([
         aiPromise,
-        pdfPromise ? pdfPromise.catch(e => { console.error("PDF Gen Error:", e); return null; }) : null
+        pdfPromise ? pdfPromise.catch(e => { console.error("❌ PDF Generation Error:", e); return null; }) : null
       ]);
 
-      console.log(`🤖 AI Reply sent to +${senderNumber}:\n${aiReply}\n`);
+      console.log(`🤖 AI Reply to +${senderNumber}:\n${aiReply}\n`);
 
       // 3. Send text reply message first
-      await sock.sendMessage(remoteJid, { text: aiReply });
+      try {
+        await sock.sendMessage(remoteJid, { text: aiReply });
+      } catch (sendTextErr) {
+        console.error("❌ Error sending text reply:", sendTextErr);
+      }
 
       // 4. Send PDF document attachment immediately right after
       if (pdfBuffer && Buffer.isBuffer(pdfBuffer)) {
@@ -326,7 +384,7 @@ async function startWhatsAppBot() {
               event: "Sidography_Event_Quotation.pdf",
               all: "Sidography_Services_Catalog_2026.pdf"
             };
-            const fileName = fileNames[pdfPackageKey] || "Sidography_Quotation.pdf";
+            const fileName = fileNames[pdfPackageKey] || "Sidography_Services_Catalog_2026.pdf";
 
             console.log(`📤 Dispatching Quotation PDF (${pdfBuffer.length} bytes) to +${senderNumber}...`);
             await sock.sendMessage(remoteJid, {
@@ -338,8 +396,10 @@ async function startWhatsAppBot() {
             console.log(`✅ Quotation PDF delivered successfully to +${senderNumber}!`);
           }
         } catch (pdfSendErr) {
-          console.error("Error sending PDF on WhatsApp:", pdfSendErr);
+          console.error("❌ Error sending PDF on WhatsApp:", pdfSendErr);
         }
+      } else if (paymentPkgKey || pdfPackageKey) {
+        console.warn(`⚠️ Warning: PDF was triggered (pkg: ${paymentPkgKey || pdfPackageKey}) but pdfBuffer was null!`);
       }
     }
   });
