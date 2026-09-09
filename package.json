@@ -1,0 +1,16 @@
+{
+  "name": "sidography-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp AI Assistant for Sidography Photography & Films",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.19",
+    "pdfkit": "^0.20.2",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
