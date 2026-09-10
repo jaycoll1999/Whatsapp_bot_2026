@@ -333,7 +333,7 @@ function getHtmlPage() {
       </div>
 
       <div class="qr-container">
-        <img id="qr-img" src="" alt="WhatsApp QR Code" style="display: none;" />
+        <img id="qr-img" src="/qr.png" alt="WhatsApp QR Code" onerror="this.style.display='none'; document.getElementById('qr-loading').style.display='flex';" onload="this.style.display='block'; document.getElementById('qr-loading').style.display='none';" />
         <div id="qr-loading" class="qr-loading">
           <div class="spinner"></div>
           <span id="qr-loading-text">Generating QR Code...</span>
@@ -560,6 +560,24 @@ export function startWebServer(options = {}) {
         connected_number: state.connectedNumber,
         timestamp: new Date().toISOString()
       }));
+      return;
+    }
+
+    // Direct raw QR image endpoint (Always displays QR image directly in any browser!)
+    if (url.pathname === '/qr.png' || url.pathname === '/qrcode.png') {
+      if (state.qrDataUrl) {
+        const base64Data = state.qrDataUrl.replace(/^data:image\/png;base64,/, '');
+        const imgBuffer = Buffer.from(base64Data, 'base64');
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Content-Length': imgBuffer.length,
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate'
+        });
+        res.end(imgBuffer);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('QR Code not ready yet. Please wait a few seconds and refresh.');
+      }
       return;
     }
 
