@@ -6,7 +6,7 @@ import makeWASocket, {
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { generateQuotationPDF, generatePaymentReceiptPDF } from './pdfGenerator.js';
-
+import { startWebServer, updateWebState } from './webServer.js';
 import fs from 'fs';
 
 // Automatically load environment variables from .env file if present
@@ -15,6 +15,18 @@ if (fs.existsSync('.env') && typeof process.loadEnvFile === 'function') {
     process.loadEnvFile('.env');
   } catch (err) {
     console.warn("Notice: could not load .env file:", err.message);
+  }
+}
+
+// Auto-restore session from WHATSAPP_SESSION environment variable if provided
+if (process.env.WHATSAPP_SESSION && !fs.existsSync('auth_info/creds.json')) {
+  try {
+    fs.mkdirSync('auth_info', { recursive: true });
+    const credsData = Buffer.from(process.env.WHATSAPP_SESSION, 'base64').toString('utf-8');
+    fs.writeFileSync('auth_info/creds.json', credsData);
+    console.log("🔑 Restored WhatsApp session from WHATSAPP_SESSION environment variable!");
+  } catch (err) {
+    console.warn("Notice: could not restore WHATSAPP_SESSION:", err.message);
   }
 }
 
@@ -74,8 +86,10 @@ const SYSTEM_PROMPT = `You are the official AI Assistant for "Sidography Photogr
    - Keep answers clean, friendly, and well-spaced. Use bullet points and appropriate emojis (📸, 💍, ✨, 📅).
    - For custom date availability or booking finalization, let them know Sudarshan will also directly connect with them on this WhatsApp chat.
 3. **PDF & QUOTATION DOCUMENT REQUESTS:**
-   - If the user asks for a PDF, quotation, brochure, rate card, or estimate:
+   - ONLY when the user explicitly asks for a PDF, quotation (कोटेशन), brochure, rate card, catalogue, or official estimate document:
      Acknowledge warmly and let them know that their official PDF document is being attached right below in this WhatsApp chat!
+   - If the user only asks general questions about pricing, shoot, availability, or services WITHOUT explicitly asking for a PDF/quotation:
+     Answer their question clearly and nicely in text only. Do NOT say a PDF is attached. At the end, you may politely mention: "तुम्हाला अधिकृत कोटेशन PDF हवे असल्यास 'Quotation PDF पाठवा' असा मेसेज करू शकता."
 4. **PAYMENT & RECEIPT CONFIRMATION:**
    - If the user mentions that payment is done, advance token paid, or asks for a receipt/bill:
      Congratulate and thank them warmly! Confirm that their payment has been registered, event dates are locked on the calendar, and inform them that their official Booking Confirmation & Payment Receipt PDF is attached right below!
@@ -86,17 +100,25 @@ const SYSTEM_PROMPT = `You are the official AI Assistant for "Sidography Photogr
 const userSessions = new Map();
 
 /**
- * Detect customer's inquiry package and whether they want service details / PDF / brochure / rates
+ * Detect customer's inquiry package ONLY IF they explicitly asked for a PDF, Quotation, Brochure, or Rate Card
  */
 function detectServiceOrPdfRequest(text, sessionHistory = []) {
   const lower = text.toLowerCase();
 
-  // 1. Detect service package type
+  // 1. Strict check: Customer MUST explicitly mention PDF, quotation, brochure, rate card, catalogue, or estimate document
+  const isExplicitPdfOrQuotation = 
+    /(\b|_)(pdf|पीडीएफ|quotation|कोटेशन|brochure|ब्रोशर|catalogue|catalog|कॅटलॉग|rate\s*card|रेट\s*कार्ड|rate\s*list|दरपत्रक|दर\s*यादी)(\b|_)|(quotation|कोटेशन|pdf|पीडीएफ)\s*(info|information|माहिती|details|डिटेल्स|हवे|हवी|pahije|dya|द्या|send|pathva|पाठवा|share|करा)|estimate(\s*copy|\s*doc|\s*file|\s*sheet|\s*pdf)/i.test(lower);
+
+  if (!isExplicitPdfOrQuotation) {
+    return null; // DO NOT send PDF unless explicitly requested!
+  }
+
+  // 2. Detect service package type
   let detectedPackage = null;
-  const isPrewedding = /pre[- ]?wedding|प्री[- ]?वेडिंग|prewed|कपल्स शूट/i.test(text);
-  const isPortrait = /portrait|model|पोर्ट्रेट|मॉडेल|portfolio|पोर्टफोलिओ|हेडशॉट|headshot/i.test(text);
-  const isEvent = /event|इव्हेंट|इवेंट|birthday|वाढदिवस|corporate|कॉर्पोरेट|anniversary|party|समारंभ/i.test(text);
-  const isWedding = /wedding|लग्न|विवाह|शादी|marriage|engagement|साखरपुडा|हळद|haldi|reception|रिसेप्शन/i.test(text);
+  const isPrewedding = /pre[- ]?wedding|प्री[- ]?वेडिंग|prewed|कपल्स शूट/i.test(lower);
+  const isPortrait = /portrait|model|पोर्ट्रेट|मॉडेल|portfolio|पोर्टफोलिओ|हेडशॉट|headshot/i.test(lower);
+  const isEvent = /event|इव्हेंट|इवेंट|birthday|वाढदिवस|corporate|कॉर्पोरेट|anniversary|party|समारंभ/i.test(lower);
+  const isWedding = /wedding|लग्न|विवाह|शादी|marriage|engagement|साखरपुडा|हळद|haldi|reception|रिसेप्शन/i.test(lower);
 
   if (isPrewedding) detectedPackage = 'prewedding';
   else if (isPortrait) detectedPackage = 'portrait';
@@ -106,7 +128,7 @@ function detectServiceOrPdfRequest(text, sessionHistory = []) {
   // If no package detected in current message, look back at recent conversation history!
   if (!detectedPackage && sessionHistory.length > 0) {
     for (let i = sessionHistory.length - 1; i >= 0; i--) {
-      const pastText = sessionHistory[i].content || '';
+      const pastText = (sessionHistory[i].content || '').toLowerCase();
       if (/pre[- ]?wedding|प्री[- ]?वेडिंग/i.test(pastText)) { detectedPackage = 'prewedding'; break; }
       if (/portrait|model|पोर्ट्रेट|मॉडेल/i.test(pastText)) { detectedPackage = 'portrait'; break; }
       if (/event|इव्हेंट|birthday|corporate/i.test(pastText)) { detectedPackage = 'event'; break; }
@@ -114,11 +136,6 @@ function detectServiceOrPdfRequest(text, sessionHistory = []) {
     }
   }
 
-  // 2. Detect if customer wants PDF, quotation, price, rates, charges, details, packages, services
-  const hasDocOrServiceIntent = 
-    /pdf|पीडीएफ|quotation|कोटेशन|brochure|ब्रोशर|estimate|अंदाजे|रेट|rate|rates|card|कार्ड|catalogue|catalog|कॅटलॉग|दर|माहिती|details|डिटेल्स|charges|fees|खर्च|किंमत|price|pricing|पॅकेज|package|packages|list|सर्व्हिसेस|services|service|ऑफर|offer|photoshoot|फोटोग्राफी|shoot|द्या|sang|sanga|pathva/i.test(text);
-
-  if (!hasDocOrServiceIntent) return null;
   return detectedPackage || 'all';
 }
 
@@ -234,6 +251,8 @@ async function getAIReply(jid, userText) {
   }
 }
 
+let currentSock = null;
+
 async function startWhatsAppBot() {
   console.log("==================================================");
   console.log("  Sidography Photography & Films - WhatsApp AI Bot");
@@ -248,21 +267,24 @@ async function startWhatsAppBot() {
     auth: state,
     printQRInTerminal: false
   });
+  currentSock = sock;
 
   // Handle connection updates
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\n📱 SCAN THE QR CODE BELOW WITH WHATSAPP TO CONNECT:\n");
+      console.log("\n📱 SCAN THE QR CODE BELOW OR OPEN WEB PAGE TO CONNECT:\n");
       qrcode.generate(qr, { small: true });
       console.log("\nSteps on Mobile: Open WhatsApp -> Settings / 3 Dots -> Linked Devices -> Link a Device\n");
+      await updateWebState({ qr, isConnected: false });
     }
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`Connection closed (status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
+      await updateWebState({ isConnected: false });
 
       if (shouldReconnect) {
         setTimeout(startWhatsAppBot, 3000);
@@ -270,13 +292,41 @@ async function startWhatsAppBot() {
         console.log("Logged out from WhatsApp. Please delete 'auth_info' folder and scan again.");
       }
     } else if (connection === 'open') {
+      const connectedNumber = sock.user?.id ? sock.user.id.split(':')[0].replace(/[^0-9]/g, '') : "Connected";
       console.log("✅ SUCCESS: Connected to WhatsApp!");
+      console.log(`📱 Connected Account: +${connectedNumber}`);
       console.log("🚀 AI Assistant is now active and listening for customer inquiries...\n");
+
+      let sessionBase64 = null;
+      try {
+        if (fs.existsSync('auth_info/creds.json')) {
+          sessionBase64 = Buffer.from(fs.readFileSync('auth_info/creds.json')).toString('base64');
+          console.log("========================================================");
+          console.log("💡 TIP FOR RENDER FREE (SESSION BACKUP):");
+          console.log("Add this in Render -> Environment Variables:");
+          console.log("WHATSAPP_SESSION=" + sessionBase64);
+          console.log("========================================================\n");
+        }
+      } catch (e) {}
+
+      await updateWebState({
+        isConnected: true,
+        connectedNumber,
+        sessionBase64
+      });
     }
   });
 
   // Save authentication credentials whenever updated
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    try {
+      if (fs.existsSync('auth_info/creds.json')) {
+        const b64 = Buffer.from(fs.readFileSync('auth_info/creds.json')).toString('base64');
+        await updateWebState({ sessionBase64: b64 });
+      }
+    } catch (e) {}
+  });
 
   // Listen for incoming messages
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -405,7 +455,17 @@ async function startWhatsAppBot() {
   });
 }
 
-// Start the service
+// Start the Web Portal & Health Check Server for Render / Browser
+startWebServer({
+  onRequestPairingCode: async (phoneNumber) => {
+    if (!currentSock) {
+      throw new Error("WhatsApp client is initializing. Please wait a few seconds and try again.");
+    }
+    return await currentSock.requestPairingCode(phoneNumber);
+  }
+});
+
+// Start the WhatsApp Bot service
 startWhatsAppBot().catch((err) => {
   console.error("Fatal error starting WhatsApp bot:", err);
 });
