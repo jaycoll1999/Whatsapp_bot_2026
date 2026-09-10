@@ -12,6 +12,7 @@ let state = {
 };
 
 let pairingHandler = null;
+let resetHandler = null;
 
 /**
  * Update state from bot.js
@@ -27,6 +28,8 @@ export async function updateWebState(updates) {
     } catch (e) {
       console.error("Failed to generate QR data URL:", e);
     }
+  } else if (updates.qr === null) {
+    state.qrDataUrl = null;
   }
 
   if (updates.isConnected !== undefined) {
@@ -133,7 +136,7 @@ function getHtmlPage() {
       padding: 16px;
       border-radius: 18px;
       display: inline-block;
-      margin: 0 auto 20px;
+      margin: 0 auto 12px;
       box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
       min-width: 250px;
       min-height: 250px;
@@ -164,6 +167,18 @@ function getHtmlPage() {
       animation: spin 0.8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-reset-qr {
+      background: rgba(255, 255, 255, 0.06);
+      color: #d1d5db;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-bottom: 20px;
+      transition: 0.2s;
+    }
+    .btn-reset-qr:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
     .instructions {
       text-align: left;
       background: rgba(255, 255, 255, 0.03);
@@ -226,20 +241,21 @@ function getHtmlPage() {
     .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     .pairing-result {
       margin-top: 14px;
-      padding: 14px;
-      background: rgba(212, 175, 55, 0.08);
-      border: 1px dashed rgba(212, 175, 55, 0.4);
+      padding: 16px;
+      background: rgba(212, 175, 55, 0.1);
+      border: 1px dashed rgba(212, 175, 55, 0.5);
       border-radius: 12px;
+      text-align: center;
     }
     .pairing-code {
-      font-size: 24px;
+      font-size: 28px;
       font-weight: 800;
-      letter-spacing: 4px;
+      letter-spacing: 5px;
       color: #d4af37;
-      margin: 6px 0;
+      margin: 8px 0;
       font-family: monospace;
     }
-    .pairing-hint { font-size: 12px; color: #9ca3af; }
+    .pairing-hint { font-size: 12px; color: #d1d5db; line-height: 1.5; }
     .connected-view { display: none; padding: 10px 0; }
     .check-icon {
       width: 64px;
@@ -313,15 +329,19 @@ function getHtmlPage() {
     <!-- NOT CONNECTED VIEW -->
     <div id="not-connected-view">
       <div class="status-badge status-waiting">
-        <span class="pulse-dot"></span> Waiting for WhatsApp Scan
+        <span class="pulse-dot"></span> Waiting for WhatsApp Scan / Link
       </div>
 
       <div class="qr-container">
         <img id="qr-img" src="" alt="WhatsApp QR Code" style="display: none;" />
         <div id="qr-loading" class="qr-loading">
           <div class="spinner"></div>
-          <span>Generating QR Code...</span>
+          <span id="qr-loading-text">Generating QR Code...</span>
         </div>
+      </div>
+
+      <div>
+        <button id="reset-qr-btn" class="btn-reset-qr" onclick="resetQR()">🔄 Generate Fresh QR Code</button>
       </div>
 
       <div class="instructions">
@@ -336,15 +356,15 @@ function getHtmlPage() {
       <div class="divider"><span>OR PAIR WITH PHONE NUMBER</span></div>
 
       <div class="pairing-section">
-        <label class="pairing-label">Enter phone number with country code (e.g. 919637577691):</label>
+        <label class="pairing-label">Enter WhatsApp phone number with country code (e.g. 919637577691):</label>
         <div class="input-group">
           <input type="text" id="phone-input" placeholder="91XXXXXXXXXX" />
           <button class="btn" id="pair-btn" onclick="requestPairingCode()">Get Code</button>
         </div>
         <div id="pairing-result-box" class="pairing-result" style="display: none;">
-          <div class="pairing-hint">Enter this 8-digit code on WhatsApp:</div>
+          <div class="pairing-hint">📱 Enter this 8-digit Pairing Code on your WhatsApp:</div>
           <div class="pairing-code" id="pairing-code-text">----</div>
-          <div class="pairing-hint">WhatsApp ➔ Linked Devices ➔ Link with phone number</div>
+          <div class="pairing-hint">Steps: WhatsApp ➔ Linked Devices ➔ Link with phone number instead ➔ Enter code above</div>
         </div>
       </div>
     </div>
@@ -399,31 +419,40 @@ function getHtmlPage() {
         const res = await fetch('/api/status');
         const data = await res.json();
 
-        if (data.connected && !isConnected) {
+        const isConn = data.isConnected || data.connected;
+        const qrUrl = data.qrDataUrl || data.qr;
+        const pCode = data.pairingCode || data.pairing_code;
+        const phone = data.connectedNumber || data.connected_number;
+        const session = data.sessionBase64 || data.session_base64;
+
+        if (isConn && !isConnected) {
           isConnected = true;
           document.getElementById('not-connected-view').style.display = 'none';
           document.getElementById('connected-view').style.display = 'block';
-          document.getElementById('connected-phone').innerText = '+' + (data.connected_number || '');
+          document.getElementById('connected-phone').innerText = '+' + (phone || '');
           
-          if (data.session_base64) {
-            document.getElementById('session-str').innerText = data.session_base64;
+          if (session) {
+            document.getElementById('session-str').innerText = session;
             document.getElementById('session-box').style.display = 'block';
           }
           return;
         }
 
-        if (!data.connected) {
-          if (data.has_qr && data.qr) {
-            const qrImg = document.getElementById('qr-img');
-            if (qrImg.src !== data.qr) {
-              qrImg.src = data.qr;
+        if (!isConn) {
+          const qrImg = document.getElementById('qr-img');
+          const qrLoading = document.getElementById('qr-loading');
+
+          if (qrUrl) {
+            if (qrImg.src !== qrUrl) {
+              qrImg.src = qrUrl;
             }
             qrImg.style.display = 'block';
-            document.getElementById('qr-loading').style.display = 'none';
+            qrLoading.style.display = 'none';
           }
 
-          if (data.pairing_code) {
-            document.getElementById('pairing-code-text').innerText = data.pairing_code;
+          if (pCode) {
+            const formatted = pCode.match(/.{1,4}/g)?.join('-') || pCode;
+            document.getElementById('pairing-code-text').innerText = formatted;
             document.getElementById('pairing-result-box').style.display = 'block';
           }
         }
@@ -447,8 +476,9 @@ function getHtmlPage() {
       try {
         const res = await fetch('/api/pair?phone=' + encodeURIComponent(phone));
         const data = await res.json();
-        if (data.success && data.code) {
-          const formatted = data.code.match(/.{1,4}/g)?.join('-') || data.code;
+        const code = data.code || data.pairingCode || data.pairing_code;
+        if (data.success && code) {
+          const formatted = code.match(/.{1,4}/g)?.join('-') || code;
           document.getElementById('pairing-code-text').innerText = formatted;
           document.getElementById('pairing-result-box').style.display = 'block';
         } else {
@@ -462,6 +492,27 @@ function getHtmlPage() {
       }
     }
 
+    async function resetQR() {
+      const btn = document.getElementById('reset-qr-btn');
+      btn.innerText = 'Resetting...';
+      btn.disabled = true;
+
+      try {
+        await fetch('/api/reset', { method: 'POST' });
+        document.getElementById('pairing-result-box').style.display = 'none';
+        document.getElementById('qr-img').style.display = 'none';
+        document.getElementById('qr-loading').style.display = 'flex';
+        document.getElementById('qr-loading-text').innerText = 'Generating fresh QR code...';
+      } catch (e) {
+        console.error("Reset error:", e);
+      } finally {
+        setTimeout(() => {
+          btn.innerText = '🔄 Generate Fresh QR Code';
+          btn.disabled = false;
+        }, 3000);
+      }
+    }
+
     function copySession() {
       const text = document.getElementById('session-str').innerText;
       navigator.clipboard.writeText(text).then(() => {
@@ -469,7 +520,7 @@ function getHtmlPage() {
       });
     }
 
-    setInterval(checkStatus, 2500);
+    setInterval(checkStatus, 2000);
     checkStatus();
   </script>
 </body>
@@ -482,6 +533,7 @@ function getHtmlPage() {
 export function startWebServer(options = {}) {
   const PORT = process.env.PORT || 5000;
   pairingHandler = options.onRequestPairingCode || null;
+  resetHandler = options.onReset || null;
 
   const server = http.createServer(async (req, res) => {
     const host = req.headers.host || 'localhost';
@@ -511,10 +563,43 @@ export function startWebServer(options = {}) {
       return;
     }
 
-    // API: Live Status
+    // API: Live Status (returns both camelCase and snake_case properties for compatibility)
     if (url.pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(state));
+      res.end(JSON.stringify({
+        connected: state.isConnected,
+        isConnected: state.isConnected,
+        has_qr: !!state.qrDataUrl,
+        qr: state.qrDataUrl,
+        qrDataUrl: state.qrDataUrl,
+        connected_number: state.connectedNumber,
+        connectedNumber: state.connectedNumber,
+        pairing_code: state.pairingCode,
+        pairingCode: state.pairingCode,
+        session_base64: state.sessionBase64,
+        sessionBase64: state.sessionBase64,
+        lastError: state.lastError
+      }));
+      return;
+    }
+
+    // API: Reset Session & Regenerate Fresh QR
+    if (url.pathname === '/api/reset') {
+      if (resetHandler) {
+        try {
+          await resetHandler();
+          state.pairingCode = null;
+          state.qrDataUrl = null;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Session reset. Generating fresh QR code...' }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      } else {
+        res.writeHead(501, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Reset handler not implemented' }));
+      }
       return;
     }
 
@@ -541,7 +626,7 @@ export function startWebServer(options = {}) {
         state.pairingCode = code;
         console.log(`🔑 Pairing Code generated: ${code}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, code }));
+        res.end(JSON.stringify({ success: true, code, pairingCode: code }));
       } catch (err) {
         console.error("Pairing code error:", err);
         res.writeHead(500, { 'Content-Type': 'application/json' });

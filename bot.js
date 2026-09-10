@@ -455,6 +455,38 @@ async function startWhatsAppBot() {
   });
 }
 
+// Reset WhatsApp Session & Request New QR Code
+async function resetWhatsAppSession() {
+  console.log("🧹 Resetting WhatsApp session and generating fresh QR code...");
+  try {
+    if (currentSock) {
+      currentSock.end();
+    }
+  } catch (e) {}
+
+  try {
+    if (fs.existsSync('auth_info')) {
+      fs.rmSync('auth_info', { recursive: true, force: true });
+    }
+  } catch (e) {
+    console.error("Error clearing auth_info folder:", e);
+  }
+
+  await updateWebState({
+    isConnected: false,
+    qr: null,
+    pairingCode: null,
+    connectedNumber: null,
+    sessionBase64: null
+  });
+
+  setTimeout(() => {
+    startWhatsAppBot().catch((err) => {
+      console.error("Error restarting bot:", err);
+    });
+  }, 1000);
+}
+
 // Start the Web Portal & Health Check Server for Render / Browser
 startWebServer({
   onRequestPairingCode: async (phoneNumber) => {
@@ -462,7 +494,8 @@ startWebServer({
       throw new Error("WhatsApp client is initializing. Please wait a few seconds and try again.");
     }
     return await currentSock.requestPairingCode(phoneNumber);
-  }
+  },
+  onReset: resetWhatsAppSession
 });
 
 // Start the WhatsApp Bot service
