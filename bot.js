@@ -252,6 +252,8 @@ async function getAIReply(jid, userText) {
 }
 
 let currentSock = null;
+const sentBotMessageIds = new Set();
+const sentBotMessageTexts = new Set();
 
 async function startWhatsAppBot() {
   console.log("==================================================");
@@ -333,13 +335,27 @@ async function startWhatsAppBot() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-
       const remoteJid = msg.key.remoteJid;
       if (!remoteJid) continue;
 
       // Ignore status broadcasts & group chats (only private 1-on-1 customer chats)
       if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@g.us')) {
+        continue;
+      }
+
+      // Ignore messages sent by the bot itself to prevent infinite self-echo loops
+      if (msg.key?.id && sentBotMessageIds.has(msg.key.id)) {
+        continue;
+      }
+
+      // Check if user is chatting with themselves (Message yourself)
+      const myPhoneNumber = sock.user?.id ? sock.user.id.split(':')[0].replace(/[^0-9]/g, '') : '';
+      const isSelfChat = myPhoneNumber && remoteJid.startsWith(myPhoneNumber);
+
+      // If message is fromMe:
+      // - If chatting with self (Message yourself): DO NOT IGNORE! Allow bot to reply to owner!
+      // - If chatting with another customer: ignore so bot doesn't interfere with owner's manual chat
+      if (msg.key.fromMe && !isSelfChat) {
         continue;
       }
 
@@ -354,6 +370,11 @@ async function startWhatsAppBot() {
         msg.message?.imageMessage?.caption ||
         msg.message?.documentMessage?.caption ||
         "";
+
+      // If this text was recently sent by the bot itself, ignore echo
+      if (userText && sentBotMessageTexts.has(userText.trim())) {
+        continue;
+      }
 
       // If user sent a photo/screenshot with no caption, assume payment receipt proof
       if ((isImage || isDocument) && !userText.trim()) {
@@ -409,7 +430,20 @@ async function startWhatsAppBot() {
 
       // 3. Send text reply message first
       try {
-        await sock.sendMessage(remoteJid, { text: aiReply });
+        sentBotMessageTexts.add(aiReply.trim());
+        if (sentBotMessageTexts.size > 100) {
+          const first = sentBotMessageTexts.values().next().value;
+          sentBotMessageTexts.delete(first);
+        }
+
+        const sentText = await sock.sendMessage(remoteJid, { text: aiReply });
+        if (sentText?.key?.id) {
+          sentBotMessageIds.add(sentText.key.id);
+          if (sentBotMessageIds.size > 200) {
+            const first = sentBotMessageIds.values().next().value;
+            sentBotMessageIds.delete(first);
+          }
+        }
       } catch (sendTextErr) {
         console.error("❌ Error sending text reply:", sendTextErr);
       }
@@ -419,12 +453,13 @@ async function startWhatsAppBot() {
         try {
           if (isReceipt) {
             console.log(`📤 Dispatching Payment Receipt PDF (${pdfBuffer.length} bytes) to +${senderNumber}...`);
-            await sock.sendMessage(remoteJid, {
+            const sentDoc = await sock.sendMessage(remoteJid, {
               document: Buffer.from(pdfBuffer),
               mimetype: 'application/pdf',
               fileName: 'Sidography_Booking_Payment_Receipt.pdf',
               caption: '🧾 Sidography Photography & Films - Official Payment Receipt & Booking Confirmation'
             });
+            if (sentDoc?.key?.id) sentBotMessageIds.add(sentDoc.key.id);
             console.log(`✅ Payment Receipt PDF delivered successfully to +${senderNumber}!`);
           } else {
             const fileNames = {
@@ -437,12 +472,13 @@ async function startWhatsAppBot() {
             const fileName = fileNames[pdfPackageKey] || "Sidography_Services_Catalog_2026.pdf";
 
             console.log(`📤 Dispatching Quotation PDF (${pdfBuffer.length} bytes) to +${senderNumber}...`);
-            await sock.sendMessage(remoteJid, {
+            const sentDoc = await sock.sendMessage(remoteJid, {
               document: Buffer.from(pdfBuffer),
               mimetype: 'application/pdf',
               fileName: fileName,
               caption: '📸 Sidography Photography & Films - Official Quotation PDF'
             });
+            if (sentDoc?.key?.id) sentBotMessageIds.add(sentDoc.key.id);
             console.log(`✅ Quotation PDF delivered successfully to +${senderNumber}!`);
           }
         } catch (pdfSendErr) {
